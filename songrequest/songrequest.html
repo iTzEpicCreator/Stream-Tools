@@ -110,7 +110,21 @@ function playNext() {
   saveQueue();
   if (!current) { player.stopVideo(); hideCard(); return; }
   player.loadVideoById(current.id);
+  player.unMute();                     // YouTube can remember a muted state between sessions
+  player.setVolume(CONFIG.volume);
   showCard(current);
+  checkStarted(current.id);
+}
+
+// If the song hasn't actually started after a few seconds, autoplay is being blocked
+function checkStarted(id) {
+  setTimeout(() => {
+    if (!current || current.id !== id) return;
+    const state = player.getPlayerState();
+    if (state !== YT.PlayerState.PLAYING && state !== YT.PlayerState.BUFFERING) {
+      showStatus("Song loaded but not playing: Firefox is blocking autoplay");
+    }
+  }, 5000);
 }
 
 // ---- Now-playing card ----
