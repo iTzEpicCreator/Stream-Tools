@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Song Requests</title>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root { --panel:#231A4E; --edge:#FFB23F; --text:#F3EEFF; --muted:#B7ABE6; --track:#3A2F72; }
+  html, body { margin:0; background:transparent; overflow:hidden; font-family:"Rajdhani", "Segoe UI", sans-serif; }
+
+  /* Player sits off-screen so only audio + the card show. Set CONFIG.showVideo to true to see it. */
+  #player { position:absolute; left:-9999px; top:0; width:320px; height:180px; }
+  body.show-video #player { left:24px; top:24px; }
+
+  #card { position:absolute; left:24px; bottom:24px; width:460px; display:flex; gap:14px; align-items:center;
+          padding:12px 16px 14px 12px; background:var(--panel); border-left:6px solid var(--edge); color:var(--text);
+          transform:translateX(-130%); transition:transform .45s cubic-bezier(.2,.8,.2,1); }
+  #card.show { transform:none; }
+  #thumb { width:96px; height:54px; object-fit:cover; flex:none; }
+  #info { flex:1; min-width:0; }
+  #title { font-size:22px; font-weight:700; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #meta { font-size:16px; font-weight:500; color:var(--muted); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #bar { height:4px; background:var(--track); margin-top:8px; }
+  #fill { height:100%; width:0; background:var(--edge); }
+
+  #status { position:absolute; right:12px; bottom:12px; display:none; padding:4px 8px;
+            background:#B3261E; color:#fff; font:14px "Segoe UI", sans-serif; }
+  @media (prefers-reduced-motion: reduce) { #card { transition:none; } }
+</style>
+</head>
+<body>
+<div id="player"></div>
+
+<div id="card">
+  <img id="thumb" alt="">
+  <div id="info">
+    <div id="title"></div>
+    <div id="meta"></div>
+    <div id="bar"><div id="fill"></div></div>
+  </div>
+</div>
+<div id="status"></div>
+
+<script>
+// ---- Config ----
+const CONFIG = {
+  wsUrl: "ws://127.0.0.1:8080/",  // Streamer.bot WebSocket server
+  volume: 40,                      // 0-100
+  maxDurationSec: 600,             // auto-skip anything longer (0 = no limit)
+  showVideo: false,                // true = show the video instead of hiding it
+  storageKey: "sr-queue"           // queue survives an OBS page refresh
+};
+
+let player = null, ready = false, current = null;
+let queue = loadQueue();
+
+// ---- Queue storage ----
+function loadQueue() {
+  try { return JSON.parse(localStorage.getItem(CONFIG.storageKey)) || []; } catch { return []; }
+}
+function saveQueue() {
+  try { localStorage.setItem(CONFIG.storageKey, JSON.stringify(queue)); } catch {}
+}
+
+// ---- YouTube player ----
+const api = document.createElement("script");
+api.src = "https://www.youtube.com/iframe_api";
+document.head.appendChild(api);
+
+function onYouTubeIframeAPIReady() {
+  const vars = { autoplay: 1, controls: 0, disablekb: 1, playsinline: 1, rel: 0 };
+  if (location.protocol.startsWith("http")) vars.origin = location.origin;
+  player = new YT.Player("player", { playerVars: vars, events: { onReady, onStateChange, onError } });
+}
+
+function onReady() {
+  ready = true;
+  player.setVolume(CONFIG.volume);
+  playNext();
+}
+
+function onStateChange(e) {
+  if (e.data === YT.PlayerState.ENDED) playNext();
+  if (e.data === YT.PlayerState.PLAYING) enforceMaxDuration();
+}
+
+function onError(e) {
+  // 101/150 = embedding blocked, 100 = removed, 153 = page has no referrer (see setup notes)
+  showStatus(e.data === 153 ? "Error 153: host this page over http(s), not as a local file"
+                            : `Skipped song: YouTube error ${e.data}`);
+  playNext();
+}
+
+function enforceMaxDuration() {
+  const d = player.getDuration();
+  if (CONFIG.maxDurationSec && d > CONFIG.maxDurationSec) {
+    showStatus(`Skipped: longer than ${Math.round(CONFIG.maxDurationSec / 60)} min`);
+    playNext();
+  }
+}
+
+function playNext() {
+  if (!ready) return;
+  current = queue.shift() || null;
+  saveQueue();
+  if (!current) { player.stopVideo(); hideCard(); return; }
+  player.loadVideoById(current.id);
+  showCard(current);
+}
+
+// ---- Now-playing card ----
+function showCard(song) {
+  document.getElementById("thumb").src = `https://i.ytimg.com/vi/${song.id}/mqdefault.jpg`;
+  document.getElementById("title").textContent = song.title;
+  document.getElementById("meta").textContent = `Requested by ${song.user}` + (queue.length ? `  |  ${queue.length} up next` : "");
+  document.getElementById("card").classList.add("show");
+}
+function hideCard() { document.getElementById("card").classList.remove("show"); }
+
+function showStatus(text) {
+  const el = document.getElementById("status");
+  el.textContent = text;
+  el.style.display = "block";
+  clearTimeout(showStatus.t);
+  showStatus.t = setTimeout(() => el.style.display = "none", 6000);
+}
+
+setInterval(() => {
+  if (!ready || !current || !player.getDuration) return;
+  const d = player.getDuration(), t = player.getCurrentTime();
+  document.getElementById("fill").style.width = d ? `${(t / d) * 100}%` : "0";
+}, 500);
+
+// ---- Streamer.bot WebSocket ----
+function handle(p) {
+  switch (p.cmd) {
+    case "add":
+      queue.push({ id: p.id, title: p.title, user: p.user });
+      saveQueue();
+      if (!current) playNext(); else showCard(current); // refresh "up next" count
+      break;
+    case "skip":  playNext(); break;
+    case "clear": queue = []; saveQueue(); if (current) showCard(current); break;
+  }
+}
+
+function connect() {
+  const ws = new WebSocket(CONFIG.wsUrl);
+  ws.onmessage = (e) => {
+    let msg; try { msg = JSON.parse(e.data); } catch { return; }
+    const p = (msg.data && msg.data.source === "songrequest") ? msg.data : msg; // handles wrapped or raw broadcasts
+    if (p.source === "songrequest") handle(p);
+  };
+  ws.onclose = () => setTimeout(connect, 3000); // auto-reconnect if Streamer.bot restarts
+}
+
+if (CONFIG.showVideo) document.body.classList.add("show-video");
+
+// ?bg=00ff00 gives a solid background for chroma keying when captured from a browser window
+const bg = new URLSearchParams(location.search).get("bg");
+if (bg) document.body.style.background = "#" + bg;
+connect();
+</script>
+</body>
+</html>
