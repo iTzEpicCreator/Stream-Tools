@@ -72,6 +72,10 @@ const CONFIG = {
   storageKey: "sr-queue"           // queue survives an OBS page refresh
 };
 
+// ?debug=1 in the address shows status and error boxes. Leave it off on stream so viewers never see them.
+const PARAMS = new URLSearchParams(location.search);
+const DEBUG = PARAMS.get("debug") === "1" || PARAMS.get("video") === "1";
+
 let player = null, ready = false, current = null;
 let queue = loadQueue();
 
@@ -132,15 +136,12 @@ function playNext() {
   checkStarted(current.id);
 }
 
-// If the song hasn't actually started after a few seconds, autoplay is being blocked
+// If playback time is still 0 after 10 seconds, the song genuinely hasn't started
 function checkStarted(id) {
   setTimeout(() => {
     if (!current || current.id !== id) return;
-    const state = player.getPlayerState();
-    if (state !== YT.PlayerState.PLAYING && state !== YT.PlayerState.BUFFERING) {
-      showStatus("Song loaded but not playing: Firefox is blocking autoplay");
-    }
-  }, 5000);
+    if (player.getCurrentTime() === 0) showStatus("Song loaded but not playing: Firefox may be blocking autoplay");
+  }, 10000);
 }
 
 // ---- Now-playing card ----
@@ -153,6 +154,8 @@ function showCard(song) {
 function hideCard() { document.getElementById("card").classList.remove("show"); }
 
 function showStatus(text) {
+  console.log("[SongRequest] " + text);
+  if (!DEBUG) return;
   const el = document.getElementById("status");
   el.textContent = text;
   el.style.display = "block";
@@ -203,6 +206,7 @@ function connect() {
 
 // On-page connection indicator so problems are visible in Firefox
 function setConnection(ok) {
+  if (!DEBUG) return;
   const el = document.getElementById("conn");
   el.textContent = ok ? "Connected to Streamer.bot" : `Not connected to Streamer.bot (${CONFIG.wsUrl})`;
   el.className = ok ? "ok" : "bad";
