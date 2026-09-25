@@ -10,7 +10,7 @@
   html, body { margin:0; background:transparent; overflow:hidden; font-family:"Rajdhani", "Segoe UI", sans-serif; }
 
   /* Player sits off-screen so only audio + the card show. Set CONFIG.showVideo to true to see it. */
-  #player { position:absolute; left:-9999px; top:0; width:320px; height:180px; }
+  #player { position:absolute; left:-9999px; top:0; width:356px; height:200px; } /* YouTube needs at least 200px tall */
   body.show-video #player { left:24px; top:24px; }
 
   #card { position:absolute; left:24px; bottom:24px; width:460px; display:flex; gap:14px; align-items:center;
@@ -194,7 +194,8 @@ function setConnection(ok) {
   if (ok) setConnection.t = setTimeout(() => el.className = "", 4000);
 }
 
-if (CONFIG.showVideo) document.body.classList.add("show-video");
+// ?video=1 in the address shows the YouTube player on screen (for testing)
+if (CONFIG.showVideo || new URLSearchParams(location.search).get("video") === "1") document.body.classList.add("show-video");
 
 // ?bg=00ff00 gives a solid background for chroma keying when captured from a browser window
 const bg = new URLSearchParams(location.search).get("bg");
