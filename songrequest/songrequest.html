@@ -6,41 +6,57 @@
 <title>Song Requests</title>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
 <style>
-  :root { --panel:#231A4E; --edge:#FFB23F; --text:#F3EEFF; --muted:#B7ABE6; --track:#3A2F72; }
+  /* ---- Theme: swap these hex codes for your BRB / shoutout colours ---- */
+  :root {
+    --g1:#7B2FF7; --g2:#F107A3; --g3:#00D4FF;   /* animated gradient colours */
+    --panel:#15102B;                              /* inside of the card */
+    --text:#FFFFFF; --muted:#C9C1E8; --track:#2C2450;
+    --border:4px;                                 /* gradient border thickness */
+    --radius:14px;
+  }
   html, body { margin:0; background:transparent; overflow:hidden; font-family:"Rajdhani", "Segoe UI", sans-serif; }
 
-  /* Player sits off-screen so only audio + the card show. Set CONFIG.showVideo to true to see it. */
+  /* Player sits off-screen so only audio + the card show. Add &video=1 to the address to see it. */
   #player { position:absolute; left:-9999px; top:0; width:356px; height:200px; } /* YouTube needs at least 200px tall */
   body.show-video #player { left:24px; top:24px; }
 
-  #card { position:absolute; left:24px; bottom:24px; width:460px; display:flex; gap:14px; align-items:center;
-          padding:12px 16px 14px 12px; background:var(--panel); border-left:6px solid var(--edge); color:var(--text);
+  /* Outer layer is the moving gradient, inner layer is the dark panel, so the gradient shows as a border */
+  #card { position:absolute; left:24px; bottom:24px; width:480px; padding:var(--border); border-radius:var(--radius);
+          background:linear-gradient(90deg, var(--g1), var(--g2), var(--g3), var(--g1)); background-size:300% 100%;
+          animation:flow 6s linear infinite;
           transform:translateX(-130%); transition:transform .45s cubic-bezier(.2,.8,.2,1); }
   #card.show { transform:none; }
-  #thumb { width:96px; height:54px; object-fit:cover; flex:none; }
+  .inner { display:flex; gap:14px; align-items:center; padding:12px 16px 14px 12px; color:var(--text);
+           background:var(--panel); border-radius:calc(var(--radius) - var(--border)); }
+  #thumb { width:96px; height:54px; object-fit:cover; flex:none; border-radius:8px; }
   #info { flex:1; min-width:0; }
   #title { font-size:22px; font-weight:700; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #meta { font-size:16px; font-weight:500; color:var(--muted); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #bar { height:4px; background:var(--track); margin-top:8px; }
-  #fill { height:100%; width:0; background:var(--edge); }
+  #bar { height:5px; background:var(--track); margin-top:8px; border-radius:3px; overflow:hidden; }
+  #fill { height:100%; width:0; border-radius:3px;
+          background:linear-gradient(90deg, var(--g1), var(--g2), var(--g3), var(--g1)); background-size:300% 100%;
+          animation:flow 6s linear infinite; }
+  @keyframes flow { from { background-position:0% 0; } to { background-position:300% 0; } }
 
   #status { position:absolute; right:12px; bottom:12px; display:none; padding:4px 8px;
             background:#B3261E; color:#fff; font:14px "Segoe UI", sans-serif; }
   #conn { position:absolute; right:12px; top:12px; display:none; padding:4px 8px; color:#fff; font:14px "Segoe UI", sans-serif; }
   #conn.ok { display:block; background:#1E7B3A; }
   #conn.bad { display:block; background:#B3261E; }
-  @media (prefers-reduced-motion: reduce) { #card { transition:none; } }
+  @media (prefers-reduced-motion: reduce) { #card { transition:none; } #card, #fill { animation:none; } }
 </style>
 </head>
 <body>
 <div id="player"></div>
 
 <div id="card">
-  <img id="thumb" alt="">
-  <div id="info">
-    <div id="title"></div>
-    <div id="meta"></div>
-    <div id="bar"><div id="fill"></div></div>
+  <div class="inner">
+    <img id="thumb" alt="">
+    <div id="info">
+      <div id="title"></div>
+      <div id="meta"></div>
+      <div id="bar"><div id="fill"></div></div>
+    </div>
   </div>
 </div>
 <div id="status"></div>
