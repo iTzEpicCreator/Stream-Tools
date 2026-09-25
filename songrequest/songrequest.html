@@ -26,6 +26,9 @@
 
   #status { position:absolute; right:12px; bottom:12px; display:none; padding:4px 8px;
             background:#B3261E; color:#fff; font:14px "Segoe UI", sans-serif; }
+  #conn { position:absolute; right:12px; top:12px; display:none; padding:4px 8px; color:#fff; font:14px "Segoe UI", sans-serif; }
+  #conn.ok { display:block; background:#1E7B3A; }
+  #conn.bad { display:block; background:#B3261E; }
   @media (prefers-reduced-motion: reduce) { #card { transition:none; } }
 </style>
 </head>
@@ -41,6 +44,7 @@
   </div>
 </div>
 <div id="status"></div>
+<div id="conn"></div>
 
 <script>
 // ---- Config ----
@@ -145,14 +149,35 @@ function handle(p) {
   }
 }
 
+// Pull our payload out of whatever shape Streamer.bot sends (raw, wrapped, or as a string)
+function extractPayload(msg) {
+  let d = (msg && msg.data !== undefined) ? msg.data : msg;
+  if (typeof d === "string") { try { d = JSON.parse(d); } catch { return null; } }
+  return (d && d.source === "songrequest") ? d : null;
+}
+
 function connect() {
   const ws = new WebSocket(CONFIG.wsUrl);
+  ws.onopen = () => {
+    setConnection(true);
+    // Streamer.bot only forwards custom broadcasts to clients subscribed to General.Custom
+    ws.send(JSON.stringify({ request: "Subscribe", id: "sr-sub", events: { General: ["Custom"] } }));
+  };
   ws.onmessage = (e) => {
     let msg; try { msg = JSON.parse(e.data); } catch { return; }
-    const p = (msg.data && msg.data.source === "songrequest") ? msg.data : msg; // handles wrapped or raw broadcasts
-    if (p.source === "songrequest") handle(p);
+    const p = extractPayload(msg);
+    if (p) handle(p);
   };
-  ws.onclose = () => setTimeout(connect, 3000); // auto-reconnect if Streamer.bot restarts
+  ws.onclose = () => { setConnection(false); setTimeout(connect, 3000); }; // auto-reconnect
+}
+
+// On-page connection indicator so problems are visible in Firefox
+function setConnection(ok) {
+  const el = document.getElementById("conn");
+  el.textContent = ok ? "Connected to Streamer.bot" : `Not connected to Streamer.bot (${CONFIG.wsUrl})`;
+  el.className = ok ? "ok" : "bad";
+  clearTimeout(setConnection.t);
+  if (ok) setConnection.t = setTimeout(() => el.className = "", 4000);
 }
 
 if (CONFIG.showVideo) document.body.classList.add("show-video");
