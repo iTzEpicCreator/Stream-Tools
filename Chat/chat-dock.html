@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html>
+<body style="margin:0;background:#18181b;height:100vh">
+  <iframe id="chat" style="border:0;width:100%;height:100%;background:transparent"
+          allowtransparency="true"></iframe>
+  <script>
+    const url = new URLSearchParams(location.search).get('url');
+    if (url) document.getElementById('chat').src = url;
+  </script>
+</body>
+</html>
