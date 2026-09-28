@@ -6,9 +6,9 @@
 <title>Song Requests</title>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
 <style>
-  /* ---- Theme: swap these hex codes for your BRB / shoutout colours ---- */
+  /* ---- Theme - hex codes for your playing card  ---- */
   :root {
-    --g1:#7B2FF7; --g2:#ffffff; --g3:#ed2727;   /* animated gradient colours */
+    --g1:#7B2FF7; --g2:#F107A3; --g3:#00D4FF;   /* animated gradient colours */
     --panel:#15102B;                              /* inside of the card */
     --text:#FFFFFF; --muted:#C9C1E8; --track:#2C2450;
     --border:4px;                                 /* gradient border thickness */
@@ -67,14 +67,18 @@
 const CONFIG = {
   wsUrl: "ws://127.0.0.1:8090/",  // Streamer.bot WebSocket server
   volume: 100,                      // 0-100
-  maxDurationSec: 0,             // auto-skip anything longer (0 = no limit)
+  maxDurationSec: 600,             // auto-skip anything longer (0 = no limit)
   showVideo: false,                // true = show the video instead of hiding it
-  storageKey: "sr-queue"           // queue survives an OBS page refresh
+  storageKey: "sr-queue",          // queue survives a page refresh
+  allowInObs: false                // false = page does nothing inside an OBS browser source (stops double playback)
 };
 
 // ?debug=1 in the address shows status and error boxes. Leave it off on stream so viewers never see them.
 const PARAMS = new URLSearchParams(location.search);
 const DEBUG = PARAMS.get("debug") === "1" || PARAMS.get("video") === "1";
+
+// OBS browser sources expose window.obsstudio. Stay silent there so only Firefox plays.
+const DISABLED = !!window.obsstudio && !CONFIG.allowInObs;
 
 let player = null, ready = false, current = null;
 let queue = loadQueue();
@@ -116,16 +120,18 @@ function onError(e) {
   playNext();
 }
 
+// Backup check. Streamer.bot sends each song's own limit (0 for the broadcaster = no limit).
 function enforceMaxDuration() {
   const d = player.getDuration();
-  if (CONFIG.maxDurationSec && d > CONFIG.maxDurationSec) {
-    showStatus(`Skipped: longer than ${Math.round(CONFIG.maxDurationSec / 60)} min`);
+  const limit = (current && typeof current.maxSec === "number") ? current.maxSec : CONFIG.maxDurationSec;
+  if (limit && d > limit) {
+    showStatus(`Skipped: longer than ${Math.round(limit / 60)} min`);
     playNext();
   }
 }
 
 function playNext() {
-  if (!ready) return;
+  if (!ready || DISABLED) return;
   current = queue.shift() || null;
   saveQueue();
   if (!current) { player.stopVideo(); hideCard(); return; }
@@ -173,7 +179,7 @@ setInterval(() => {
 function handle(p) {
   switch (p.cmd) {
     case "add":
-      queue.push({ id: p.id, title: p.title, user: p.user });
+      queue.push({ id: p.id, title: p.title, user: p.user, maxSec: p.maxSec });
       saveQueue();
       if (!current) playNext(); else showCard(current); // refresh "up next" count
       break;
@@ -220,7 +226,11 @@ if (CONFIG.showVideo || new URLSearchParams(location.search).get("video") === "1
 // ?bg=00ff00 gives a solid background for chroma keying when captured from a browser window
 const bg = new URLSearchParams(location.search).get("bg");
 if (bg) document.body.style.background = "#" + bg;
-connect();
+if (DISABLED) {
+  console.log("[SongRequest] Running inside OBS, player disabled. Use Firefox + Window Capture.");
+} else {
+  connect();
+}
 </script>
 </body>
 </html>
