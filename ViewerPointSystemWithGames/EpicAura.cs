@@ -9,10 +9,10 @@ using Newtonsoft.Json;
 // One action holds this code. Present Viewers triggers, the promo Timer and all commands point at it.
 // Data saved to data\EpicAura\epicaura.json in the Streamer.bot folder.
 //
-// Viewer commands:  !aura (!points) [name], !auratop, !give, !gamble, !duel, !accept, !deny,
+// Viewer commands:  !aura (!points) [name], !auratop [earned], !stats [name], !gametop <category>, !give, !gamble, !duel, !accept, !deny,
 //                   !heist, !fight, !ring, !enter, !bet, !contribute, !claim, !link, !unlink, !auraid,
 //                   !giveaway, !predict, !goal (status when used without admin words), !aurahelp
-// Admin commands:   !addaura, !takeaura, !aurareset, !drop, !rain (!giveall), !aurainfo [n], !giveaway start|close|draw|reroll|cancel|end,
+// Admin commands:   !addaura, !takeaura, !aurareset [all|balances|stats|warn <when>|confirm], !drop, !rain (!giveall), !aurainfo [n], !giveaway start|close|draw|reroll|cancel|end,
 //                   !predict open|lock|result|cancel, !goal start|cancel|end, !ring cancel,
 // Timed message:    add a Streamer.bot Timer (Settings > Timers) and a Timed Actions trigger on this action
 public class CPHInline
@@ -198,7 +198,7 @@ public class CPHInline
 
     private const double PromoLiveWindowMin = 15;   // timer only posts if viewers were seen this recently (so never offline)
     private const double HelpCooldownSec = 30;      // per platform, stops !aurahelp spam
-    private const string HelpUrl = "";              // optional, e.g. your GitHub README link, added to the end of !aurahelp
+    private const string HelpUrl = "";   // paste your viewer guide share link here, sent as a second message after !aurahelp. "" turns it off
 
     // Rotates in order. Keep each under 200 characters (YouTube limit).
     private static readonly string[] PromoLines =
@@ -219,6 +219,8 @@ public class CPHInline
     private const string CmdBalance = "!aura";
     private const string CmdBalanceAlt = "!points";
     private const string CmdTop = "!auratop";
+    private const string CmdStats = "!stats";
+    private const string CmdGameTop = "!gametop";
     private const string CmdGive = "!give";
     private const string CmdLink = "!link";
     private const string CmdUnlink = "!unlink";
@@ -257,6 +259,11 @@ public class CPHInline
     // ============================================================
 
     private const bool ModsAreAdmins = true;
+
+    // Owner only features. Owner = the IDs in AdminIds below. Set true to let mods run them too.
+    private const bool ModsCanRunGiveaways = false;
+    private const bool ModsCanRunGoals = false;
+    private const bool ModsCanReset = false;
     private static readonly List<string> AdminIds = new List<string>
     {
         // Use !auraid on each platform and paste the result here, e.g. "twitch:12345678"
@@ -288,6 +295,7 @@ public class CPHInline
         public double Carry;                      // fractional aura carried between ticks
         public DateTime LastAccrualUtc;
         public List<string> Accounts = new List<string>();   // "platform:userId"
+        public Dictionary<string, long> Stats = new Dictionary<string, long>();   // game stats, see GameTopCategories
     }
 
     public class GiveawayState
@@ -331,6 +339,7 @@ public class CPHInline
         public GiveawayState Giveaway;
         public PredictionState Prediction;
         public GoalState Goal;
+        public int Season = 1;
     }
 
     // ============================================================
@@ -358,6 +367,7 @@ public class CPHInline
         public Wallet Me;
         public string[] Parts;
         public bool Admin;
+        public bool Owner;
     }
 
     private static readonly object Gate = new object();
@@ -371,6 +381,8 @@ public class CPHInline
     private static System.Threading.Timer heistTimer;
     private static DateTime heistCooldownUntil = DateTime.MinValue;
     private static DropState drop;
+    private class PendingReset { public string AdminKey; public string Scope; public DateTime ExpiresUtc; }
+    private static PendingReset pendingReset;
     private static readonly Dictionary<string, DateTime> fightCooldowns = new Dictionary<string, DateTime>();   // walletId
     private static readonly Dictionary<string, int> fightStreaks = new Dictionary<string, int>();             // walletId
     private static RingState ring;
@@ -510,6 +522,7 @@ public class CPHInline
         };
         c.Me = GetOrCreateWallet(platform, userId, userName);
         c.Admin = IsAdmin(c.Key);
+        c.Owner = AdminIds.Contains(c.Key);
         lastSeen[c.Me.Id] = DateTime.UtcNow;
 
         switch (cmd)
@@ -518,6 +531,8 @@ public class CPHInline
             case CmdBalance:
             case CmdBalanceAlt: ShowBalance(c); break;
             case CmdTop: ShowTop(c); break;
+            case CmdStats: ShowStats(c); break;
+            case CmdGameTop: ShowGameTop(c); break;
             case CmdGive: Give(c); break;
             case CmdLink: LinkAccounts(c); break;
             case CmdUnlink: UnlinkAccount(c); break;
@@ -547,7 +562,10 @@ public class CPHInline
             // Admin
             case CmdAdd: if (c.Admin) AddAura(c, false); break;
             case CmdTake: if (c.Admin) AddAura(c, true); break;
-            case CmdReset: if (c.Admin) ResetAll(c); break;
+            case CmdReset:
+                if (c.Owner || (c.Admin && ModsCanReset)) ResetAll(c);
+                else if (c.Admin) Say(c, "resets are owner only.");
+                break;
             case CmdDrop: if (c.Admin) StartDrop(c); break;
             case CmdRain:
             case CmdGiveAll: if (c.Admin) Rain(c); break;
@@ -604,8 +622,10 @@ public class CPHInline
         helpCooldowns[c.Platform] = now.AddSeconds(HelpCooldownSec);
 
         string help = $"{CurrencyName}: earn it by watching. Check {CmdBalance} {CmdTop} | Play {CmdFight} {CmdRing} {CmdGamble} {CmdDuel} {CmdHeist} | Events {CmdEnter} {CmdBet} {CmdContribute} | Link {CmdLink}";
-        if (HelpUrl != "") help += " | Guide: " + HelpUrl;
         Reply(c.Platform, help);
+
+        // Separate message so the link never gets cut off by YouTube's 200 character limit
+        if (HelpUrl != "") Reply(c.Platform, "Full guide: " + HelpUrl);
     }
 
     // ============================================================
@@ -624,13 +644,99 @@ public class CPHInline
         Say(c, $"you have {Fmt(c.Me.Aura)} {CurrencyName}.");
     }
 
+    // !auratop          richest right now
+    // !auratop earned   most earned from watching, all time
     private void ShowTop(Ctx c)
     {
-        var top = store.Wallets.Values.Where(w => w.Aura > 0).OrderByDescending(w => w.Aura).Take(5).ToList();
+        bool earned = c.Parts.Length > 0 && c.Parts[0].ToLowerInvariant().StartsWith("earn");
+        Func<Wallet, long> by = w => earned ? w.Lifetime : w.Aura;
+
+        var top = store.Wallets.Values.Where(w => by(w) > 0).OrderByDescending(by).Take(5).ToList();
         if (top.Count == 0) { Reply(c.Platform, $"Nobody has any {CurrencyName} yet."); return; }
 
-        var lines = top.Select((w, i) => $"{i + 1}. {w.Name} ({Fmt(w.Aura)})");
-        Reply(c.Platform, $"Top {CurrencyName}: " + string.Join(" | ", lines));
+        var lines = top.Select((w, i) => $"{i + 1}. {w.Name} ({Fmt(by(w))})");
+        string season = SeasonsEnabled ? $" (Season {store.Season})" : "";
+        Reply(c.Platform, (earned ? $"Most earned{season}: " : $"Top {CurrencyName}{season}: ") + string.Join(" | ", lines));
+    }
+
+    // ============================================================
+    // GAME STATS
+    // !stats [name]          one person's record
+    // !gametop <category>    leaderboard for one stat
+    // ============================================================
+
+    // category word -> stat key, label
+    private static readonly string[][] GameTopCategories =
+    {
+        new[] { "fights",  "fightWins",    "Most fight wins" },
+        new[] { "streak",  "bestStreak",   "Best fight win streak" },
+        new[] { "kraber",  "krabers",      "Most Kraber headshots" },
+        new[] { "ring",    "ringWins",     "Most Apex Champions" },
+        new[] { "duels",   "duelWins",     "Most duels won" },
+        new[] { "heist",   "heistEscapes", "Most heist escapes" },
+        new[] { "gamble",  "gambleWins",   "Most gamble wins" },
+        new[] { "bigwin",  "biggestWin",   "Biggest single win" }
+    };
+
+    private static void AddStat(Wallet w, string key, long amount = 1)
+    {
+        long v;
+        w.Stats.TryGetValue(key, out v);
+        w.Stats[key] = v + amount;
+    }
+
+    private static void MaxStat(Wallet w, string key, long value)
+    {
+        long v;
+        if (!w.Stats.TryGetValue(key, out v) || value > v) w.Stats[key] = value;
+    }
+
+    private static long GetStat(Wallet w, string key)
+    {
+        long v;
+        return w.Stats.TryGetValue(key, out v) ? v : 0;
+    }
+
+    // Records a win's profit towards the biggest win stat
+    private static void RecordWin(Wallet w, long profit)
+    {
+        if (profit > 0) MaxStat(w, "biggestWin", profit);
+    }
+
+    private void ShowStats(Ctx c)
+    {
+        Wallet w = c.Me;
+        if (c.Parts.Length > 0)
+        {
+            w = FindWalletByName(c.Platform, JoinParts(c.Parts, 0, c.Parts.Length));
+            if (w == null) { Say(c, "couldn't find that person."); return; }
+        }
+
+        Func<string, long> s = k => GetStat(w, k);
+        if (w.Stats.Count == 0) { Reply(c.Platform, $"{w.Name} hasn't played any games yet."); return; }
+
+        Reply(c.Platform,
+            $"{w.Name}: Fights {s("fightWins")}W/{s("fightLosses")}L (best streak {s("bestStreak")}) | " +
+            $"Champion {s("ringWins")}/{s("ringPlays")} | Duels {s("duelWins")}-{s("duelLosses")} | " +
+            $"Heists {s("heistEscapes")}/{s("heistEscapes") + s("heistCaught")} | Biggest win {Fmt(s("biggestWin"))}");
+    }
+
+    private void ShowGameTop(Ctx c)
+    {
+        string want = c.Parts.Length > 0 ? c.Parts[0].ToLowerInvariant() : "";
+        string[] cat = GameTopCategories.FirstOrDefault(x => x[0] == want || x[0].TrimEnd('s') == want.TrimEnd('s'));
+
+        if (cat == null)
+        {
+            Say(c, $"usage: {CmdGameTop} <" + string.Join("|", GameTopCategories.Select(x => x[0])) + ">");
+            return;
+        }
+
+        var top = store.Wallets.Values.Where(w => GetStat(w, cat[1]) > 0).OrderByDescending(w => GetStat(w, cat[1])).Take(5).ToList();
+        if (top.Count == 0) { Reply(c.Platform, $"{cat[2]}: nobody yet. Be the first!"); return; }
+
+        var lines = top.Select((w, i) => $"{i + 1}. {w.Name} ({Fmt(GetStat(w, cat[1]))})");
+        Reply(c.Platform, $"{cat[2]}: " + string.Join(" | ", lines));
     }
 
     // !give name amount
@@ -728,6 +834,11 @@ public class CPHInline
 
         keep.Aura += merge.Aura;
         keep.Lifetime += merge.Lifetime;
+        foreach (var st in merge.Stats)
+        {
+            if (st.Key == "bestStreak" || st.Key == "biggestWin") MaxStat(keep, st.Key, st.Value);
+            else AddStat(keep, st.Key, st.Value);
+        }
         if (merge.LastAccrualUtc > keep.LastAccrualUtc) keep.LastAccrualUtc = merge.LastAccrualUtc;
 
         foreach (string acc in merge.Accounts)
@@ -799,10 +910,13 @@ public class CPHInline
         if (roll >= GambleWinRoll)
         {
             c.Me.Aura += bet * 2;
+            AddStat(c.Me, "gambleWins");
+            RecordWin(c.Me, bet);
             Say(c, $"rolled {roll} and won {Fmt(bet)}! You now have {Fmt(c.Me.Aura)}.");
         }
         else
         {
+            AddStat(c.Me, "gambleLosses");
             Say(c, $"rolled {roll} and lost {Fmt(bet)}. You now have {Fmt(c.Me.Aura)}.");
         }
     }
@@ -851,6 +965,9 @@ public class CPHInline
 
         loser.Aura -= d.Amount;
         winner.Aura += d.Amount;
+        AddStat(winner, "duelWins");
+        AddStat(loser, "duelLosses");
+        RecordWin(winner, d.Amount);
 
         ReplyMany(PlatformsFor(c.Platform, challenger),
             $"{winner.Name} won the duel against {loser.Name} and took {Fmt(d.Amount)} {CurrencyName}!");
@@ -928,10 +1045,12 @@ public class CPHInline
         {
             Wallet w;
             if (!store.Wallets.TryGetValue(kv.Key, out w)) continue;
-            if (Rng.Next(100) >= chance) continue;
+            if (Rng.Next(100) >= chance) { AddStat(w, "heistCaught"); continue; }
 
             long payout = (long)Math.Floor(kv.Value * HeistPayout);
             w.Aura += payout;
+            AddStat(w, "heistEscapes");
+            RecordWin(w, payout - kv.Value);
             survivors.Add($"{w.Name} (+{Fmt(payout - kv.Value)})");
         }
 
@@ -1020,6 +1139,9 @@ public class CPHInline
         bool kraber = Rng.Next(100) < KraberChance;
         long payout = (long)Math.Floor(stake * odds.Payout * (kraber ? 2 : 1));
         c.Me.Aura += payout;
+        AddStat(c.Me, "fightWins");
+        if (kraber) AddStat(c.Me, "krabers");
+        RecordWin(c.Me, payout - stake);
 
         string line;
         if (kraber) line = "KRABER HEADSHOT! {legend} one tapped the {size}. Double payout!";
@@ -1032,6 +1154,7 @@ public class CPHInline
         int streak;
         fightStreaks.TryGetValue(c.Me.Id, out streak);
         fightStreaks[c.Me.Id] = ++streak;
+        MaxStat(c.Me, "bestStreak", streak);
 
         if (streak >= KillLeaderStreak)
             Announce($"{c.Name} is the KILL LEADER with {streak} fight wins in a row! Somebody stop them!");
@@ -1059,6 +1182,8 @@ public class CPHInline
             else line = PickLegendLine(legend, LegendLossLines, FightLossLines);
             Say(c, $"{FillFight(line, legend, size)} (-{Fmt(stake)}, now {Fmt(c.Me.Aura)})");
         }
+
+        AddStat(c.Me, "fightLosses");
 
         // Streak broken
         int streak;
@@ -1200,6 +1325,11 @@ public class CPHInline
             }
 
             ring.Started = true;
+            foreach (var p in ring.All)
+            {
+                Wallet pw;
+                if (store.Wallets.TryGetValue(p.WalletId, out pw)) AddStat(pw, "ringPlays");
+            }
             Announce($"Dropship is empty! {ring.All.Count} legends, {Fmt(RingPot())} {CurrencyName} on the line. Ring 1 is closing...");
             return;
         }
@@ -1239,7 +1369,12 @@ public class CPHInline
         long champPrize = afterCut - runnerPrize;
 
         Wallet w;
-        if (store.Wallets.TryGetValue(champ.WalletId, out w)) w.Aura += champPrize;
+        if (store.Wallets.TryGetValue(champ.WalletId, out w))
+        {
+            w.Aura += champPrize;
+            AddStat(w, "ringWins");
+            RecordWin(w, champPrize - ring.BuyIn);
+        }
         if (store.Wallets.TryGetValue(runnerUp.WalletId, out w)) w.Aura += runnerPrize;
 
         Announce($"{champ.Name}'s {champ.Legend} won the final 1v1 and is the APEX CHAMPION! +{Fmt(champPrize)} {CurrencyName}. {runnerUp.Name} takes 2nd for {Fmt(runnerPrize)}.");
@@ -1289,8 +1424,11 @@ public class CPHInline
     {
         string sub = c.Parts.Length > 0 ? c.Parts[0].ToLowerInvariant() : "";
         var g = store.Giveaway;
+        bool canRun = c.Owner || (c.Admin && ModsCanRunGiveaways);
 
-        if (!c.Admin || sub == "")
+        if (c.Admin && !canRun && sub != "") { Say(c, "giveaways are owner only for now."); return; }
+
+        if (!canRun || sub == "")
         {
             if (g == null) { Reply(c.Platform, "No giveaway running right now."); return; }
             Reply(c.Platform, GiveawayStatus(g));
@@ -1551,8 +1689,11 @@ public class CPHInline
     {
         string sub = c.Parts.Length > 0 ? c.Parts[0].ToLowerInvariant() : "";
         var g = store.Goal;
+        bool canRun = c.Owner || (c.Admin && ModsCanRunGoals);
 
-        if (!c.Admin || sub == "")
+        if (c.Admin && !canRun && sub != "") { Say(c, "community goals are owner only for now."); return; }
+
+        if (!canRun || sub == "")
         {
             if (g == null) { Reply(c.Platform, "No community goal running right now."); return; }
             Reply(c.Platform, GoalStatus(g));
@@ -1667,19 +1808,137 @@ public class CPHInline
         Announce($"{c.Name} made it rain! {count} viewers just got {Fmt(amount)} {CurrencyName} each. Check with {CmdBalance}");
     }
 
-    // !aurareset confirm
+    // ============================================================
+    // RESETS AND SEASONS
+    // !aurareset                 warns, then needs !aurareset confirm within 60s (new season: balances + stats)
+    // !aurareset balances        only balances
+    // !aurareset stats           only game stats / leaderboards
+    // !aurareset warn <when>     tells viewers a reset is coming, e.g. !aurareset warn this Sunday
+    // !aurareset confirm         goes ahead with the pending reset
+    // ============================================================
+
+    private const double ResetConfirmSec = 60;
+    private const bool SeasonsEnabled = false;   // true = season numbers, end of season standings and "Season X starts now"
+
     private void ResetAll(Ctx c)
     {
-        if (c.Parts.Length == 0 || c.Parts[0].ToLowerInvariant() != "confirm")
+        string first = c.Parts.Length > 0 ? c.Parts[0].ToLowerInvariant() : "all";
+
+        // Heads up for viewers
+        if (first == "warn" || first == "announce")
         {
-            Say(c, $"this wipes everyone's balance. Type {CmdReset} confirm to do it.");
+            string when = JoinParts(c.Parts, 1, c.Parts.Length - 1);
+            if (when == "") { Say(c, $"usage: {CmdReset} warn <when>, e.g. {CmdReset} warn this Sunday"); return; }
+            if (SeasonsEnabled)
+                Announce($"Heads up! Season {store.Season} of {CurrencyName} ends {when}. Balances and game stats go back to 0, so spend it while you can!");
+            else
+                Announce($"Heads up! {CurrencyName} resets {when}. Balances and game stats go back to 0, so spend it while you can!");
             return;
         }
 
-        Backup("pre-reset");
-        foreach (var w in store.Wallets.Values) { w.Aura = 0; w.Carry = 0; }
-        Announce($"All {CurrencyName} balances have been reset to 0.");
+        // Go ahead with a pending reset
+        if (first == "confirm")
+        {
+            if (pendingReset != null && pendingReset.ExpiresUtc < DateTime.UtcNow) pendingReset = null;
+            if (pendingReset == null || pendingReset.AdminKey != c.Key)   // only the admin who started it can confirm
+            {
+                Say(c, $"nothing to confirm. Type {CmdReset} first.");
+                return;
+            }
+            string scope = pendingReset.Scope;
+            pendingReset = null;
+            DoReset(scope);
+            return;
+        }
+
+        if (first != "all" && first != "balances" && first != "stats")
+        {
+            Say(c, $"usage: {CmdReset} [all|balances|stats|warn <when>]");
+            return;
+        }
+
+        string busy = RunningGames();
+        if (busy != "") { Say(c, $"finish or cancel the {busy} first, then reset."); return; }
+
+        pendingReset = new PendingReset { AdminKey = c.Key, Scope = first, ExpiresUtc = DateTime.UtcNow.AddSeconds(ResetConfirmSec) };
+
+        string what;
+        if (first == "balances") what = $"wipes every viewer's {CurrencyName} balance to 0. Stats stay.";
+        else if (first == "stats") what = "wipes every game stat and leaderboard. Balances stay.";
+        else if (SeasonsEnabled) what = $"ends Season {store.Season}: every balance, earned total and game stat goes to 0. Linked accounts stay.";
+        else what = "wipes every balance, earned total and game stat to 0. Linked accounts stay.";
+
+        Say(c, $"WARNING: this {what} A backup is saved first. Type {CmdReset} confirm within {ResetConfirmSec}s to go ahead.");
     }
+
+    // Anything with Aura staked right now
+    private string RunningGames()
+    {
+        var busy = new List<string>();
+        if (store.Giveaway != null && !store.Giveaway.Drawn && store.Giveaway.Tickets.Count > 0) busy.Add("giveaway");
+        if (store.Prediction != null) busy.Add("prediction");
+        if (store.Goal != null) busy.Add("community goal");
+        if (heist != null) busy.Add("heist");
+        if (ring != null) busy.Add("battle royale");
+        return string.Join(", ", busy);
+    }
+
+    private void DoReset(string scope)
+    {
+        Backup(SeasonsEnabled ? $"season{store.Season}-{scope}" : $"reset-{scope}");
+
+        if (scope == "all" && !SeasonsEnabled)
+        {
+            foreach (var w in store.Wallets.Values)
+            {
+                w.Aura = 0; w.Carry = 0; w.Lifetime = 0;
+                w.Stats.Clear();
+            }
+            fightStreaks.Clear();
+            Announce($"All {CurrencyName} balances and game stats have been reset to 0. Fresh start!");
+            return;
+        }
+
+        if (scope == "all")
+        {
+            // Season wrap up before the wipe
+            var richest = store.Wallets.Values.Where(w => w.Aura > 0).OrderByDescending(w => w.Aura).Take(3)
+                .Select((w, i) => $"{i + 1}. {w.Name} ({Fmt(w.Aura)})").ToList();
+            var fighter = store.Wallets.Values.OrderByDescending(w => GetStat(w, "fightWins")).FirstOrDefault(w => GetStat(w, "fightWins") > 0);
+            var champ = store.Wallets.Values.OrderByDescending(w => GetStat(w, "ringWins")).FirstOrDefault(w => GetStat(w, "ringWins") > 0);
+
+            if (richest.Count > 0)
+                Announce($"Season {store.Season} final standings: " + string.Join(" | ", richest));
+
+            var honours = new List<string>();
+            if (fighter != null) { long fw = GetStat(fighter, "fightWins"); honours.Add($"Top fighter: {fighter.Name} ({fw} win{(fw == 1 ? "" : "s")})"); }
+            if (champ != null) honours.Add($"Most Apex Champions: {champ.Name} ({GetStat(champ, "ringWins")})");
+            if (honours.Count > 0) Announce(string.Join(" | ", honours) + ". GGs!");
+
+            foreach (var w in store.Wallets.Values)
+            {
+                w.Aura = 0; w.Carry = 0; w.Lifetime = 0;
+                w.Stats.Clear();
+            }
+            fightStreaks.Clear();
+            store.Season++;
+            Announce($"Season {store.Season} of {CurrencyName} starts now! Everyone is back to 0. Type {CmdAurahelpName()} to get going.");
+            return;
+        }
+
+        if (scope == "balances")
+        {
+            foreach (var w in store.Wallets.Values) { w.Aura = 0; w.Carry = 0; }
+            Announce($"All {CurrencyName} balances have been reset to 0. Fresh start!");
+            return;
+        }
+
+        foreach (var w in store.Wallets.Values) w.Stats.Clear();
+        fightStreaks.Clear();
+        Announce("All game stats and leaderboards have been reset. Fresh start!");
+    }
+
+    private static string CmdAurahelpName() { return CmdHelp; }
 
     // ============================================================
     // WALLETS
@@ -1777,9 +2036,15 @@ public class CPHInline
         if (store.Wallets == null) store.Wallets = new Dictionary<string, Wallet>();
         if (store.AccountToWallet == null) store.AccountToWallet = new Dictionary<string, string>();
         if (store.AccountNames == null) store.AccountNames = new Dictionary<string, string>();
-        foreach (var w in store.Wallets.Values) if (w.Accounts == null) w.Accounts = new List<string>();
+        foreach (var w in store.Wallets.Values)
+        {
+            if (w.Accounts == null) w.Accounts = new List<string>();
+            if (w.Stats == null) w.Stats = new Dictionary<string, long>();
+        }
 
         CPH.LogInfo($"[EpicAura] Loaded {store.Wallets.Count} wallets");
+        if (AdminIds.Count == 0)
+            CPH.LogWarn("[EpicAura] AdminIds is empty, so nobody can run giveaways, goals or resets. Use !auraid and add your IDs.");
     }
 
     private void Save()
