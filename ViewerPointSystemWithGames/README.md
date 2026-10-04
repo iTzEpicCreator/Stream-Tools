@@ -82,6 +82,7 @@ It only posts while you're live (it checks viewers were seen in the last 15 mins
    "twitch:12345678", "youtube:UCxxxxxxxx", "kick:1234567"
    ```
 3. Compile again. Mods also count as admins while `ModsAreAdmins` is `true`.
+4. Giveaways, community goals and resets are **owner only** (the IDs in `AdminIds`). To let mods run them later, set `ModsCanRunGiveaways`, `ModsCanRunGoals` or `ModsCanReset` to `true` and compile. If `AdminIds` is empty, nobody can run them, and the log warns you.
 
 ### 6. First stream checks
 - **Earning:** after a few minutes, `!aura` should show a balance. Earning starts from the second Present Viewers tick, so the first few minutes pay nothing.
@@ -131,14 +132,14 @@ Amounts accept numbers, `all`, `half` and `2k` style.
 
 | Command | Example |
 |---|---|
-| Giveaway | `!giveaway start 100 5 1000 Apex Coins` (cost per ticket, max tickets each, prize). Cost `0` = free, one entry each. Then `close`, `draw`, `reroll`, `cancel` (refunds), `end` |
+| Giveaway (owner only) | `!giveaway start 100 5 1000 Apex Coins` (cost per ticket, max tickets each, prize). Cost `0` = free, one entry each. Then `close`, `draw`, `reroll`, `cancel` (refunds), `end` |
 | Prediction | `!predict open Will we win? \| Win \| Top 5 \| Neither`, then `lock`, `result 2`, `cancel` (refunds) |
-| Community goal | `!goal start 100k Cosplay Stream`, then `cancel` (refunds) or `end` |
+| Community goal (owner only) | `!goal start 100k Cosplay Stream`, then `cancel` (refunds) or `end` |
 | Drop | `!drop 500` (first to `!claim` in 60s gets it) |
 | Rain | `!rain 500` or `!giveall 500` gives everyone present 500 each (seen by a viewer tick or used a command in the last 15 mins) |
 | Welcome message | `!aurainfo` posts the next one on every platform, `!aurainfo 3` posts a specific one |
 | Balances | `!addaura <name> <amount>` adds, `!takeaura <name> <amount>` removes (never below 0) |
-| Resets | `!aurareset warn this Sunday` warns viewers a reset is coming. `!aurareset` (new season: balances, earned and stats), `!aurareset balances` or `!aurareset stats` shows a warning, then `!aurareset confirm` within 60s does it. With `SeasonsEnabled = true` in the code, the full reset also posts final standings and starts a numbered season (off by default). A backup is always saved, and it won't run while a giveaway, prediction, goal, heist or ring is active. |
+| Resets (owner only) | `!aurareset warn this Sunday` warns viewers a reset is coming. `!aurareset` (new season: balances, earned and stats), `!aurareset balances` or `!aurareset stats` shows a warning, then `!aurareset confirm` within 60s does it. With `SeasonsEnabled = true` in the code, the full reset also posts final standings and starts a numbered season (off by default). A backup is always saved, and it won't run while a giveaway, prediction, goal, heist or ring is active. |
 | Ring | `!ring cancel` (refunds) |
 
 ## Settings
