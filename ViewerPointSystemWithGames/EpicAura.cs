@@ -12,7 +12,7 @@ using Newtonsoft.Json;
 // Viewer commands:  !aura (!points) [name], !auratop, !give, !gamble, !duel, !accept, !deny,
 //                   !heist, !fight, !ring, !enter, !bet, !contribute, !claim, !link, !unlink, !auraid,
 //                   !giveaway, !predict, !goal (status when used without admin words), !aurahelp
-// Admin commands:   !addaura, !aurareset, !drop, !aurainfo [n], !giveaway start|close|draw|reroll|cancel|end,
+// Admin commands:   !addaura, !takeaura, !aurareset, !drop, !rain (!giveall), !aurainfo [n], !giveaway start|close|draw|reroll|cancel|end,
 //                   !predict open|lock|result|cancel, !goal start|cancel|end, !ring cancel,
 // Timed message:    add a Streamer.bot Timer (Settings > Timers) and a Timed Actions trigger on this action
 public class CPHInline
@@ -53,6 +53,9 @@ public class CPHInline
     // Drop (first to !claim wins)
     private const double DropClaimSec = 60;
 
+    // Rain (admin gives everyone present the same amount)
+    private const double RainWindowMin = 15;      // "present" = seen by Present Viewers or used a command this recently
+
     // ============================================================
     // CONFIG: APEX FIGHT   !fight <legend> <1v1|1v2|1v3> <amount>
     // ============================================================
@@ -81,7 +84,7 @@ public class CPHInline
         "Bangalore|bang|banga", "Caustic", "Mirage", "Octane|oct|octavio", "Wattson|watt", "Crypto",
         "Revenant|rev", "Loba", "Rampart|ramp", "Horizon|hori", "Fuse", "Valkyrie|valk", "Seer", "Ash",
         "Mad Maggie|maggie", "Newcastle|newy", "Vantage", "Catalyst|cata", "Ballistic", "Conduit",
-        "Alter", "Sparrow"
+        "Alter", "Sparrow", "Axle"
     };
 
     // Tokens: {legend} {size}
@@ -243,8 +246,11 @@ public class CPHInline
 
     // Admin
     private const string CmdAdd = "!addaura";
+    private const string CmdTake = "!takeaura";
     private const string CmdReset = "!aurareset";
     private const string CmdDrop = "!drop";
+    private const string CmdRain = "!rain";
+    private const string CmdGiveAll = "!giveall";
 
     // ============================================================
     // CONFIG: ADMINS, IGNORED ACCOUNTS, CHAT
@@ -371,6 +377,7 @@ public class CPHInline
     private static System.Threading.Timer ringTimer;
     private static DateTime ringCooldownUntil = DateTime.MinValue;
     private static Dictionary<string, string> legendLookup;
+    private static readonly Dictionary<string, DateTime> lastSeen = new Dictionary<string, DateTime>();   // walletId, for !rain
     private static DateTime lastPresentTickUtc = DateTime.MinValue;
     private static int promoIndex;
     private static readonly Dictionary<string, DateTime> helpCooldowns = new Dictionary<string, DateTime>();   // platform
@@ -439,6 +446,7 @@ public class CPHInline
             if (string.IsNullOrEmpty(id) || IsIgnored(name, login)) continue;
 
             Wallet w = GetOrCreateWallet(platform, id, name);
+            lastSeen[w.Id] = now;
             if (paidThisTick.Contains(w.Id)) continue;
             paidThisTick.Add(w.Id);   // linked accounts present on two platforms
 
@@ -502,6 +510,7 @@ public class CPHInline
         };
         c.Me = GetOrCreateWallet(platform, userId, userName);
         c.Admin = IsAdmin(c.Key);
+        lastSeen[c.Me.Id] = DateTime.UtcNow;
 
         switch (cmd)
         {
@@ -536,9 +545,12 @@ public class CPHInline
 
 
             // Admin
-            case CmdAdd: if (c.Admin) AddAura(c); break;
+            case CmdAdd: if (c.Admin) AddAura(c, false); break;
+            case CmdTake: if (c.Admin) AddAura(c, true); break;
             case CmdReset: if (c.Admin) ResetAll(c); break;
             case CmdDrop: if (c.Admin) StartDrop(c); break;
+            case CmdRain:
+            case CmdGiveAll: if (c.Admin) Rain(c); break;
         }
 
         Save();
@@ -1617,10 +1629,13 @@ public class CPHInline
     // ============================================================
 
     // !addaura name 500   (negative to remove)
-    private void AddAura(Ctx c)
+    // !takeaura name 500  (same thing, always removes)
+    private void AddAura(Ctx c, bool take)
     {
-        long amount;
-        if (c.Parts.Length < 2 || !long.TryParse(c.Parts.Last(), out amount)) { Say(c, $"usage: {CmdAdd} <name> <amount>"); return; }
+        string cmd = take ? CmdTake : CmdAdd;
+        long amount = c.Parts.Length > 0 ? ParseAmount(c.Parts.Last().TrimStart('-'), long.MaxValue) : -1;
+        if (c.Parts.Length < 2 || amount <= 0) { Say(c, $"usage: {cmd} <name> <amount>"); return; }
+        if (take || c.Parts.Last().StartsWith("-")) amount = -amount;
 
         Wallet t = FindWalletByName(c.Platform, JoinParts(c.Parts, 0, c.Parts.Length - 1));
         if (t == null) { Say(c, "couldn't find that person."); return; }
@@ -1629,6 +1644,27 @@ public class CPHInline
         if (amount > 0) t.Lifetime += amount;
 
         Reply(c.Platform, $"{t.Name} now has {Fmt(t.Aura)} {CurrencyName}.");
+    }
+
+    // !rain 500  (or !giveall 500) gives everyone present the same amount
+    private void Rain(Ctx c)
+    {
+        long amount = c.Parts.Length > 0 ? ParseAmount(c.Parts[0], long.MaxValue) : -1;
+        if (amount <= 0) { Say(c, $"usage: {CmdRain} <amount>"); return; }
+
+        DateTime cutoff = DateTime.UtcNow.AddMinutes(-RainWindowMin);
+        int count = 0;
+        foreach (var kv in lastSeen.Where(kv => kv.Value >= cutoff).ToList())
+        {
+            Wallet w;
+            if (!store.Wallets.TryGetValue(kv.Key, out w)) continue;
+            w.Aura += amount;
+            w.Lifetime += amount;
+            count++;
+        }
+
+        if (count == 0) { Say(c, "nobody present to rain on yet. Wait for the next viewer tick."); return; }
+        Announce($"{c.Name} made it rain! {count} viewers just got {Fmt(amount)} {CurrencyName} each. Check with {CmdBalance}");
     }
 
     // !aurareset confirm
