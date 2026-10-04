@@ -2,6 +2,8 @@
 
 A cross-platform points currency for Twitch, YouTube and Kick, with giveaways, predictions, community goals, a timed welcome message and Apex Legends themed chat games. One action, one command, one timer, one C# file. Needs no extra references.
 
+For viewers: share `VIEWER_GUIDE.md`. It explains how to earn and spend Epic Aura without any setup details, and it's the link `!aurahelp` sends in chat (`HelpUrl` in the code).
+
 ## Install (first time, about 5 minutes)
 
 Make sure Twitch, YouTube and Kick are connected in Streamer.bot first (Platforms tab).
@@ -32,6 +34,8 @@ In the **Triggers** panel of the same action, right click and add all three:
 !aura
 !points
 !auratop
+!stats
+!gametop
 !give
 !link
 !unlink
@@ -103,7 +107,9 @@ It only posts while you're live (it checks viewers were seen in the last 15 mins
 | Command | What it does |
 |---|---|
 | `!aura [name]` / `!points` | Check a balance |
-| `!auratop` | Top 5 |
+| `!auratop` / `!auratop earned` | Top 5 richest now / most earned all time |
+| `!stats [name]` | Game record: fights, best streak, champion wins, duels, heists, biggest win |
+| `!gametop <category>` | Game leaderboards: `fights`, `streak`, `kraber`, `ring`, `duels`, `heist`, `gamble`, `bigwin` |
 | `!aurahelp` | Lists the main commands |
 | `!give <name> <amount>` | Send Aura to someone |
 | `!link <platform> <name>` then `!link confirm` | Merge balances across platforms |
@@ -131,7 +137,8 @@ Amounts accept numbers, `all`, `half` and `2k` style.
 | Drop | `!drop 500` (first to `!claim` in 60s gets it) |
 | Rain | `!rain 500` or `!giveall 500` gives everyone present 500 each (seen by a viewer tick or used a command in the last 15 mins) |
 | Welcome message | `!aurainfo` posts the next one on every platform, `!aurainfo 3` posts a specific one |
-| Balances | `!addaura <name> <amount>` adds, `!takeaura <name> <amount>` removes (never below 0), `!aurareset confirm` wipes everyone |
+| Balances | `!addaura <name> <amount>` adds, `!takeaura <name> <amount>` removes (never below 0) |
+| Resets | `!aurareset warn this Sunday` warns viewers a reset is coming. `!aurareset` (new season: balances, earned and stats), `!aurareset balances` or `!aurareset stats` shows a warning, then `!aurareset confirm` within 60s does it. With `SeasonsEnabled = true` in the code, the full reset also posts final standings and starts a numbered season (off by default). A backup is always saved, and it won't run while a giveaway, prediction, goal, heist or ring is active. |
 | Ring | `!ring cancel` (refunds) |
 
 ## Settings
