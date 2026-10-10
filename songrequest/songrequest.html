@@ -6,7 +6,7 @@
 <title>Song Requests</title>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
 <style>
-  /* ---- Theme: swap these hex codes for colours you would like ---- */
+  /* ---- Theme: swap these hex codes for your BRB / shoutout colours ---- */
   :root {
     --g1:#7B2FF7; --g2:#F107A3; --g3:#00D4FF;   /* animated gradient colours */
     --panel:#15102B;                              /* inside of the card */
@@ -83,6 +83,8 @@ const DISABLED = !!window.obsstudio && !CONFIG.allowInObs;
 
 let player = null, ready = false, current = null, paused = false, socket = null;
 let queue = loadQueue();
+let history = [];   // songs that have played, newest last (for !previous)
+const HISTORY_MAX = 20;
 
 // ---- Queue storage ----
 function loadQueue() {
@@ -100,7 +102,8 @@ function syncToStreamerbot() {
     request: "DoAction",
     id: "sr-sync",
     action: { name: CONFIG.actionName },
-    args: { srSync: "1", srQueue: JSON.stringify(queue), srCurrent: current ? JSON.stringify(current) : "" }
+    args: { srSync: "1", srQueue: JSON.stringify(queue), srCurrent: current ? JSON.stringify(withoutPlayed(current)) : "",
+            srHistoryCount: String(history.length) }
   }));
 }
 
@@ -123,7 +126,10 @@ function onReady() {
 
 function onStateChange(e) {
   if (e.data === YT.PlayerState.ENDED) playNext();
-  if (e.data === YT.PlayerState.PLAYING) enforceMaxDuration();
+  if (e.data === YT.PlayerState.PLAYING) {
+    if (current) current.played = true;
+    enforceMaxDuration();
+  }
 }
 
 function onError(e) {
@@ -145,7 +151,19 @@ function enforceMaxDuration() {
 
 function playNext() {
   if (!ready || DISABLED) return;
-  current = queue.shift() || null;
+  rememberCurrent();
+  startSong(queue.shift() || null);
+}
+
+// !previous: put the current song back at the front of the queue and replay the last one
+function playPrevious() {
+  if (!ready || DISABLED || !history.length) return;
+  if (current) queue.unshift(withoutPlayed(current));
+  startSong(history.pop());
+}
+
+function startSong(song) {
+  current = song;
   paused = false;
   saveQueue();
   if (!current) { player.stopVideo(); hideCard(); return; }
@@ -154,6 +172,18 @@ function playNext() {
   player.setVolume(CONFIG.volume);
   showCard(current);
   checkStarted(current.id);
+}
+
+// Only songs that actually started go into history, so failed ones never come back via !previous
+function rememberCurrent() {
+  if (!current || !current.played) return;
+  history.push(withoutPlayed(current));
+  if (history.length > HISTORY_MAX) history.shift();
+}
+
+function withoutPlayed(song) {
+  const { played, ...rest } = song;
+  return rest;
 }
 
 // If playback time is still 0 after 10 seconds, the song genuinely hasn't started
@@ -198,6 +228,10 @@ function handle(p) {
       if (!current) playNext(); else showCard(current); // refresh "up next" count
       break;
     case "skip":  playNext(); break;
+    case "previous": playPrevious(); break;
+    case "restart":
+      if (current) { player.seekTo(0, true); player.playVideo(); paused = false; showCard(current); }
+      break;
     case "clear": queue = []; saveQueue(); if (current) showCard(current); break;
     case "pause":
       if (current) { player.pauseVideo(); paused = true; showCard(current); }
