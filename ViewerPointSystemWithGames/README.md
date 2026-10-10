@@ -31,6 +31,7 @@ In the **Triggers** panel of the same action, right click and add all three:
 7. Make sure it's **Enabled**, then click OK.
 
 ```
+!epicaura
 !aura
 !points
 !auratop
@@ -107,6 +108,7 @@ It only posts while you're live (it checks viewers were seen in the last 15 mins
 
 | Command | What it does |
 |---|---|
+| `!epicaura` | Quick hype summary of what Epic Aura is (30s cooldown per platform, mods skip it) |
 | `!aura [name]` / `!points` | Check a balance |
 | `!auratop` / `!auratop earned` | Top 5 richest now / most earned all time |
 | `!stats [name]` | Game record: fights, best streak, champion wins, duels, heists, biggest win |
