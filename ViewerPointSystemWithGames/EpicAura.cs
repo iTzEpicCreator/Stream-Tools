@@ -9,7 +9,7 @@ using Newtonsoft.Json;
 // One action holds this code. Present Viewers triggers, the promo Timer and all commands point at it.
 // Data saved to data\EpicAura\epicaura.json in the Streamer.bot folder.
 //
-// Viewer commands:  !aura (!points) [name], !auratop [earned], !stats [name], !gametop <category>, !give, !gamble, !duel, !accept, !deny,
+// Viewer commands:  !epicaura, !aura (!points) [name], !auratop [earned], !stats [name], !gametop <category>, !give, !gamble, !duel, !accept, !deny,
 //                   !heist, !fight, !ring, !enter, !bet, !contribute, !claim, !link, !unlink, !auraid,
 //                   !giveaway, !predict, !goal (status when used without admin words), !aurahelp
 // Admin commands:   !addaura, !takeaura, !aurareset [all|balances|stats|warn <when>|confirm], !drop, !rain (!giveall), !aurainfo [n], !giveaway start|close|draw|reroll|cancel|end,
@@ -198,6 +198,16 @@ public class CPHInline
 
     private const double PromoLiveWindowMin = 15;   // timer only posts if viewers were seen this recently (so never offline)
     private const double HelpCooldownSec = 30;      // per platform, stops !aurahelp spam
+    // !epicaura hype message. One line is picked at random each time. Keep each under 200 characters (YouTube limit).
+    private const double EpicAuraCooldownSec = 30;   // per platform, mods and owner skip it
+    private static readonly string[] EpicAuraLines =
+    {
+        "Epic Aura is our own currency across Twitch, YouTube and Kick! Earn it just by hanging out, then spend it on Apex inspired chat games like !fight and !ring. Type !aurahelp to dive in!",
+        "Welcome to Epic Aura! Stack it up just by watching, then take a 1v3 with !fight, drop into a !ring battle royale or win giveaways. Check your balance with !aura!",
+        "Epic Aura = free points for chilling here! Duel your mates, bet on Terry's matches and fight to be crowned Apex Champion in !ring. !aura for your balance, !aurahelp for more!",
+        "This chat runs on Epic Aura! You're earning it right now just by being here. Spend it on !fight, !ring, !duel, giveaways and more. Type !aurahelp to get started!"
+    };
+
     private const string HelpUrl = "";   // paste your viewer guide share link here, sent as a second message after !aurahelp. "" turns it off
 
     // Rotates in order. Keep each under 200 characters (YouTube limit).
@@ -227,6 +237,7 @@ public class CPHInline
     private const string CmdId = "!auraid";
     private const string CmdHelp = "!aurahelp";
     private const string CmdInfo = "!aurainfo";
+    private const string CmdEpicAura = "!epicaura";
 
     // Games
     private const string CmdGamble = "!gamble";
@@ -336,6 +347,7 @@ public class CPHInline
         public Dictionary<string, Wallet> Wallets = new Dictionary<string, Wallet>();
         public Dictionary<string, string> AccountToWallet = new Dictionary<string, string>();
         public Dictionary<string, string> AccountNames = new Dictionary<string, string>();
+        public Dictionary<string, string> AccountLogins = new Dictionary<string, string>();   // Twitch login names, e.g. hatattackgaming
         public GiveawayState Giveaway;
         public PredictionState Prediction;
         public GoalState Goal;
@@ -392,6 +404,7 @@ public class CPHInline
     private static readonly Dictionary<string, DateTime> lastSeen = new Dictionary<string, DateTime>();   // walletId, for !rain
     private static DateTime lastPresentTickUtc = DateTime.MinValue;
     private static int promoIndex;
+    private static readonly Dictionary<string, DateTime> epicAuraCooldowns = new Dictionary<string, DateTime>();   // platform
     private static readonly Dictionary<string, DateTime> helpCooldowns = new Dictionary<string, DateTime>();   // platform
     private static readonly List<string> loggedKeysFor = new List<string>();
 
@@ -457,7 +470,7 @@ public class CPHInline
             string name = FirstNonEmpty(Str(u, "display", "displayName", "user", "name"), login);
             if (string.IsNullOrEmpty(id) || IsIgnored(name, login)) continue;
 
-            Wallet w = GetOrCreateWallet(platform, id, name);
+            Wallet w = GetOrCreateWallet(platform, id, name, login);
             lastSeen[w.Id] = now;
             if (paidThisTick.Contains(w.Id)) continue;
             paidThisTick.Add(w.Id);   // linked accounts present on two platforms
@@ -500,7 +513,8 @@ public class CPHInline
         string rawInput = Arg("rawInput");
 
         // All commands can live on ONE Streamer.bot command, so read the real command word from the message
-        string msg = Arg("message").Trim();
+        string msg = StripInvisible(Arg("message")).Trim();
+        rawInput = StripInvisible(rawInput);
         if (msg.StartsWith("!"))
         {
             int space = msg.IndexOf(' ');
@@ -520,9 +534,10 @@ public class CPHInline
             Name = userName,
             Parts = rawInput.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
         };
-        c.Me = GetOrCreateWallet(platform, userId, userName);
+        c.Me = GetOrCreateWallet(platform, userId, userName, Arg("userName"));
         c.Admin = IsAdmin(c.Key);
         c.Owner = AdminIds.Contains(c.Key);
+        CPH.LogInfo($"[EpicAura] {cmd} from {c.Key} ({userName}) admin={c.Admin} owner={c.Owner}");
         lastSeen[c.Me.Id] = DateTime.UtcNow;
 
         switch (cmd)
@@ -539,6 +554,7 @@ public class CPHInline
             case CmdId: Say(c, "your ID is " + c.Key); break;
             case CmdHelp: ShowHelp(c); break;
             case CmdInfo: if (c.Admin) FirePromo(c); else ShowHelp(c); break;
+            case CmdEpicAura: ShowEpicAura(c); break;
 
             // Games
             case CmdGamble: Gamble(c); break;
@@ -560,15 +576,15 @@ public class CPHInline
 
 
             // Admin
-            case CmdAdd: if (c.Admin) AddAura(c, false); break;
-            case CmdTake: if (c.Admin) AddAura(c, true); break;
+            case CmdAdd: if (c.Admin) AddAura(c, false); else NotAdmin(c); break;
+            case CmdTake: if (c.Admin) AddAura(c, true); else NotAdmin(c); break;
             case CmdReset:
                 if (c.Owner || (c.Admin && ModsCanReset)) ResetAll(c);
                 else if (c.Admin) Say(c, "resets are owner only.");
                 break;
-            case CmdDrop: if (c.Admin) StartDrop(c); break;
+            case CmdDrop: if (c.Admin) StartDrop(c); else NotAdmin(c); break;
             case CmdRain:
-            case CmdGiveAll: if (c.Admin) Rain(c); break;
+            case CmdGiveAll: if (c.Admin) Rain(c); else NotAdmin(c); break;
         }
 
         Save();
@@ -614,6 +630,18 @@ public class CPHInline
         return line;
     }
 
+    // !epicaura  quick hype summary on the platform it was typed on, plus the guide link if HelpUrl is set
+    private void ShowEpicAura(Ctx c)
+    {
+        DateTime now = DateTime.UtcNow;
+        DateTime until;
+        if (!c.Admin && epicAuraCooldowns.TryGetValue(c.Platform, out until) && until > now) return;
+        epicAuraCooldowns[c.Platform] = now.AddSeconds(EpicAuraCooldownSec);
+
+        Reply(c.Platform, Pick(EpicAuraLines));
+        if (HelpUrl != "") Reply(c.Platform, "Full guide: " + HelpUrl);
+    }
+
     private void ShowHelp(Ctx c)
     {
         DateTime now = DateTime.UtcNow;
@@ -637,7 +665,7 @@ public class CPHInline
         if (c.Parts.Length > 0)
         {
             Wallet t = FindWalletByName(c.Platform, JoinParts(c.Parts, 0, c.Parts.Length));
-            if (t == null) { Say(c, "couldn't find that person."); return; }
+            if (t == null) { NotFound(c); return; }
             Reply(c.Platform, $"{t.Name} has {Fmt(t.Aura)} {CurrencyName}.");
             return;
         }
@@ -709,7 +737,7 @@ public class CPHInline
         if (c.Parts.Length > 0)
         {
             w = FindWalletByName(c.Platform, JoinParts(c.Parts, 0, c.Parts.Length));
-            if (w == null) { Say(c, "couldn't find that person."); return; }
+            if (w == null) { NotFound(c); return; }
         }
 
         Func<string, long> s = k => GetStat(w, k);
@@ -747,7 +775,7 @@ public class CPHInline
         Wallet t = FindWalletByName(c.Platform, JoinParts(c.Parts, 0, c.Parts.Length - 1));
         long amount = ParseAmount(c.Parts.Last(), c.Me.Aura);
 
-        if (t == null) { Say(c, "couldn't find that person."); return; }
+        if (t == null) { NotFound(c); return; }
         if (t.Id == c.Me.Id) { Say(c, "you can't give to yourself."); return; }
         if (amount <= 0 || !TrySpend(c.Me, amount)) { Say(c, $"not enough, you have {Fmt(c.Me.Aura)}."); return; }
 
@@ -933,7 +961,7 @@ public class CPHInline
         Wallet t = FindWalletByName(c.Platform, JoinParts(c.Parts, 0, c.Parts.Length - 1));
         long amount = ParseAmount(c.Parts.Last(), c.Me.Aura);
 
-        if (t == null) { Say(c, "couldn't find that person."); return; }
+        if (t == null) { NotFound(c); return; }
         if (t.Id == c.Me.Id) { Say(c, "you can't duel yourself."); return; }
         if (amount < DuelMin) { Say(c, $"minimum duel is {Fmt(DuelMin)}."); return; }
         if (c.Me.Aura < amount) { Say(c, $"not enough, you have {Fmt(c.Me.Aura)}."); return; }
@@ -1779,12 +1807,19 @@ public class CPHInline
         if (take || c.Parts.Last().StartsWith("-")) amount = -amount;
 
         Wallet t = FindWalletByName(c.Platform, JoinParts(c.Parts, 0, c.Parts.Length - 1));
-        if (t == null) { Say(c, "couldn't find that person."); return; }
+        if (t == null) { NotFound(c); return; }
 
         t.Aura = Math.Max(0, t.Aura + amount);
         if (amount > 0) t.Lifetime += amount;
 
         Reply(c.Platform, $"{t.Name} now has {Fmt(t.Aura)} {CurrencyName}.");
+    }
+
+    // Tells the person (and the log) why an admin command did nothing
+    private void NotAdmin(Ctx c)
+    {
+        CPH.LogWarn($"[EpicAura] {c.Key} isn't an admin. Add it to AdminIds if this is you.");
+        Say(c, "that's a mod command.");
     }
 
     // !rain 500  (or !giveall 500) gives everyone present the same amount
@@ -1805,7 +1840,10 @@ public class CPHInline
         }
 
         if (count == 0) { Say(c, "nobody present to rain on yet. Wait for the next viewer tick."); return; }
-        Announce($"{c.Name} made it rain! {count} viewers just got {Fmt(amount)} {CurrencyName} each. Check with {CmdBalance}");
+        // Avoids the word "viewers", Kick's chat filter censors it
+        string who = count == 1 ? "1 person" : $"{count} people";
+        string each = count == 1 ? "" : " each";
+        Announce($"{c.Name} made it rain! {who} just got {Fmt(amount)} {CurrencyName}{each}. Check with {CmdBalance}");
     }
 
     // ============================================================
@@ -1863,7 +1901,7 @@ public class CPHInline
         pendingReset = new PendingReset { AdminKey = c.Key, Scope = first, ExpiresUtc = DateTime.UtcNow.AddSeconds(ResetConfirmSec) };
 
         string what;
-        if (first == "balances") what = $"wipes every viewer's {CurrencyName} balance to 0. Stats stay.";
+        if (first == "balances") what = $"wipes everyone's {CurrencyName} balance to 0. Stats stay.";
         else if (first == "stats") what = "wipes every game stat and leaderboard. Balances stay.";
         else if (SeasonsEnabled) what = $"ends Season {store.Season}: every balance, earned total and game stat goes to 0. Linked accounts stay.";
         else what = "wipes every balance, earned total and game stat to 0. Linked accounts stay.";
@@ -1944,8 +1982,9 @@ public class CPHInline
     // WALLETS
     // ============================================================
 
-    private Wallet GetOrCreateWallet(string platform, string userId, string name)
+    private Wallet GetOrCreateWallet(string platform, string userId, string name, string login = "")
     {
+        if (!string.IsNullOrEmpty(login)) store.AccountLogins[AccountKey(platform, userId)] = login;
         string key = AccountKey(platform, userId);
         if (!string.IsNullOrEmpty(name)) store.AccountNames[key] = name;
 
@@ -1974,12 +2013,24 @@ public class CPHInline
     private Wallet FindWalletByName(string platform, string rawName)
     {
         string norm = NormName(rawName);
-        var matches = store.AccountNames.Where(kv => NormName(kv.Value) == norm).Select(kv => kv.Key).ToList();
+        lastLookup = CleanName(rawName);
+        var matches = store.AccountNames.Where(kv => NormName(kv.Value) == norm).Select(kv => kv.Key)
+            .Concat(store.AccountLogins.Where(kv => NormName(kv.Value) == norm).Select(kv => kv.Key))
+            .Distinct().ToList();
         string key = matches.FirstOrDefault(k => PlatformOfKey(k) == platform) ?? matches.FirstOrDefault();
         if (key == null) return null;
 
         string walletId;
         return store.AccountToWallet.TryGetValue(key, out walletId) && store.Wallets.ContainsKey(walletId) ? store.Wallets[walletId] : null;
+    }
+
+    private static string lastLookup = "";
+
+    // Shown when a name lookup fails, the usual reason is they've never been seen by the bot
+    private void NotFound(Ctx c)
+    {
+        CPH.LogWarn($"[EpicAura] No wallet found for '{lastLookup}'");
+        Say(c, $"couldn't find {lastLookup}. They need to chat or be in stream at least once while live first.");
     }
 
     private static bool TrySpend(Wallet w, long amount)
@@ -2036,6 +2087,7 @@ public class CPHInline
         if (store.Wallets == null) store.Wallets = new Dictionary<string, Wallet>();
         if (store.AccountToWallet == null) store.AccountToWallet = new Dictionary<string, string>();
         if (store.AccountNames == null) store.AccountNames = new Dictionary<string, string>();
+        if (store.AccountLogins == null) store.AccountLogins = new Dictionary<string, string>();
         foreach (var w in store.Wallets.Values)
         {
             if (w.Accounts == null) w.Accounts = new List<string>();
@@ -2127,6 +2179,29 @@ public class CPHInline
 
     private static string AccountKey(string platform, string userId) { return platform + ":" + userId; }
     private static string PlatformOfKey(string key) { return key.Substring(0, key.IndexOf(':')); }
+    // Removes zero width / invisible characters some chat clients add, which break name and number matching
+    private static string StripInvisible(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        var sb = new System.Text.StringBuilder(text.Length);
+        for (int i = 0; i < text.Length; i++)
+        {
+            char ch = text[i];
+
+            // Unicode tag characters (U+E0000 to U+E007F), sent as a surrogate pair
+            if (ch == '\uDB40' && i + 1 < text.Length && text[i + 1] >= '\uDC00' && text[i + 1] <= '\uDC7F') { i++; continue; }
+
+            // Zero width spaces, joiners, word joiner, BOM, braille blank, soft hyphen
+            if ((ch >= '\u200B' && ch <= '\u200F') || ch == '\u2060' || ch == '\uFEFF' || ch == '\u2800' || ch == '\u034F' || ch == '\u00AD')
+            {
+                sb.Append(' ');
+                continue;
+            }
+            sb.Append(ch);
+        }
+        return sb.ToString().Trim();
+    }
+
     private static string CleanName(string n) { return (n ?? "").Trim().TrimStart('@'); }
     private static string NormName(string n) { return CleanName(n).Replace(" ", "").ToLowerInvariant(); }
     private static string Cap(string s) { return s == "youtube" ? "YouTube" : char.ToUpper(s[0]) + s.Substring(1); }
