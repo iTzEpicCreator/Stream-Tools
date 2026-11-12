@@ -539,7 +539,8 @@ public class CPHInline
         };
         c.Me = GetOrCreateWallet(platform, userId, userName, Arg("userName"));
         c.Admin = IsAdmin(c.Key);
-        c.Owner = AdminIds.Contains(c.Key);
+        c.Owner = AdminIds.Contains(c.Key) || IsBroadcaster(platform, userId);
+        if (c.Owner) c.Admin = true;
         CPH.LogInfo($"[EpicAura] {cmd} from {c.Key} ({userName}) admin={c.Admin} owner={c.Owner}");
         lastSeen[c.Me.Id] = DateTime.UtcNow;
 
@@ -2237,7 +2238,7 @@ public class CPHInline
 
         CPH.LogInfo($"[EpicAura] Loaded {store.Wallets.Count} wallets");
         if (AdminIds.Count == 0)
-            CPH.LogWarn("[EpicAura] AdminIds is empty, so nobody can run giveaways, goals or resets. Use !auraid and add your IDs.");
+            CPH.LogInfo("[EpicAura] AdminIds is empty. The broadcaster is detected automatically, but if owner commands don't work on a platform, use !auraid there and add the ID.");
     }
 
     private void Save()
@@ -2296,6 +2297,19 @@ public class CPHInline
     {
         if (AdminIds.Contains(key)) return true;
         return ModsAreAdmins && (ArgBool("isModerator") || ArgBool("isBroadcaster"));
+    }
+
+    // The channel owner, worked out from what Streamer.bot sends with the message.
+    // AdminIds stays as a backup in case a platform doesn't send any of these.
+    private bool IsBroadcaster(string platform, string userId)
+    {
+        if (ArgBool("isBroadcaster")) return true;
+
+        string broadcasterId = Arg("broadcastUserId");
+        if (broadcasterId != "" && broadcasterId == userId) return true;
+
+        if (platform == "twitch" && Arg("role") == "4") return true;   // Twitch role 4 = broadcaster
+        return false;
     }
 
     // ============================================================
