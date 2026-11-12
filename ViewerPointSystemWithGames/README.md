@@ -140,6 +140,7 @@ Amounts accept numbers, `all`, `half` and `2k` style.
 | Giveaway (owner only) | `!giveaway start 100 5 1000 Apex Coins` (cost per ticket, max tickets each, prize). Cost `0` = free, one entry each. Then `close`, `draw`, `reroll`, `cancel` (refunds), `end` |
 | Prediction | `!predict open Will we win? \| Win \| Top 5 \| Neither`, then `lock`, `result 2`, `cancel` (refunds) |
 | Community goal (owner only) | `!goal start 100k Cosplay Stream`, then `cancel` (refunds) or `end` |
+| Giveaway entries (owner only) | `!giveaway entries` saves everyone who has entered to `data\EpicAura\giveaway-entries.csv` (opens in Excel): name, platforms, tickets, chance of winning, and who won. Nothing is posted in chat. It also saves automatically every time you draw |
 | Full leaderboard | `!auraexport` saves everyone's balance and stats to `data\EpicAura\leaderboard.csv` in the Streamer.bot folder. Open it in Excel. Close it before exporting again |
 | Drop | `!drop 500` (first to `!claim` in 60s gets it) |
 | Rain | `!rain 500` or `!giveall 500` gives everyone present 500 each (seen by a viewer tick or used a command in the last 15 mins) |
