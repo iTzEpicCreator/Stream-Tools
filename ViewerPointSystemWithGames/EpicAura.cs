@@ -1578,12 +1578,12 @@ public class CPHInline
         {
             File.WriteAllText(file, sb.ToString(), new System.Text.UTF8Encoding(true));   // BOM so Excel shows names correctly
             CPH.LogInfo("[EpicAura] Leaderboard exported to " + file);
-            Say(c, $"leaderboard saved, {rows.Count} people. It's in data\\EpicAura\\leaderboard.csv in the Streamer.bot folder.");
+            Say(c, "leaderboard exported.");
         }
         catch (Exception ex)
         {
             CPH.LogWarn("[EpicAura] Export failed: " + ex.Message);
-            Say(c, "couldn't save the leaderboard. If leaderboard.csv is open in Excel, close it and try again.");
+            Say(c, "couldn't export the leaderboard. If it's open in Excel, close it and try again.");
         }
     }
 
