@@ -9,10 +9,10 @@ using Newtonsoft.Json;
 // One action holds this code. Present Viewers triggers, the promo Timer and all commands point at it.
 // Data saved to data\EpicAura\epicaura.json in the Streamer.bot folder.
 //
-// Viewer commands:  !epicaura, !aura (!points) [name], !auratop [earned], !stats [name], !gametop <category>, !give, !gamble, !duel, !accept, !deny,
+// Viewer commands:  !epicaura, !giveawayhelp, !aura (!points) [name], !auratop [earned], !stats [name], !gametop <category>, !give, !gamble, !duel, !accept, !deny,
 //                   !heist, !fight, !ring, !enter, !bet, !contribute, !claim, !link, !unlink, !auraid,
 //                   !giveaway, !predict, !goal (status when used without admin words), !aurahelp
-// Admin commands:   !addaura, !takeaura, !aurareset [all|balances|stats|warn <when>|confirm], !drop, !rain (!giveall), !aurainfo [n], !giveaway start|close|draw|reroll|cancel|end,
+// Admin commands:   !auraexport, !addaura, !takeaura, !aurareset [all|balances|stats|warn <when>|confirm], !drop, !rain (!giveall), !aurainfo [n], !giveaway start|close|draw|reroll|cancel|end,
 //                   !predict open|lock|result|cancel, !goal start|cancel|end, !ring cancel,
 // Timed message:    add a Streamer.bot Timer (Settings > Timers) and a Timed Actions trigger on this action
 public class CPHInline
@@ -252,6 +252,8 @@ public class CPHInline
     // Events
     private const string CmdGiveaway = "!giveaway";
     private const string CmdEnter = "!enter";
+    private const string CmdGiveawayHelp = "!giveawayhelp";
+    private const string CmdExport = "!auraexport";
     private const string CmdPredict = "!predict";
     private const string CmdBet = "!bet";
     private const string CmdGoal = "!goal";
@@ -405,6 +407,7 @@ public class CPHInline
     private static DateTime lastPresentTickUtc = DateTime.MinValue;
     private static int promoIndex;
     private static readonly Dictionary<string, DateTime> epicAuraCooldowns = new Dictionary<string, DateTime>();   // platform
+    private static readonly Dictionary<string, DateTime> giveawayHelpCooldowns = new Dictionary<string, DateTime>();   // platform
     private static readonly Dictionary<string, DateTime> helpCooldowns = new Dictionary<string, DateTime>();   // platform
     private static readonly List<string> loggedKeysFor = new List<string>();
 
@@ -569,6 +572,8 @@ public class CPHInline
             // Events
             case CmdGiveaway: Giveaway(c); break;
             case CmdEnter: EnterGiveaway(c); break;
+            case CmdGiveawayHelp: GiveawayHelp(c); break;
+            case CmdExport: if (c.Admin) ExportLeaderboard(c); else NotAdmin(c); break;
             case CmdPredict: Predict(c); break;
             case CmdBet: Bet(c); break;
             case CmdGoal: Goal(c); break;
@@ -1466,12 +1471,12 @@ public class CPHInline
         switch (sub)
         {
             case "start":
-                if (g != null) { Say(c, $"a giveaway is already running. Use {CmdGiveaway} end first."); return; }
+                if (g != null) { Say(c, $"a giveaway is already running. Use {CmdGiveaway} cancel (refunds everyone) or {CmdGiveaway} end (after the draw) first."); return; }
 
                 long cost; int max;
                 if (c.Parts.Length < 4 || !long.TryParse(c.Parts[1], out cost) || !int.TryParse(c.Parts[2], out max) || cost < 0 || max < 1)
                 {
-                    Say(c, $"usage: {CmdGiveaway} start <ticketCost> <maxTickets> <prize>");
+                    Say(c, $"that's not quite right. Use {CmdGiveaway} start <ticket price> <max tickets each> <prize>, e.g. {CmdGiveaway} start 100 5 Apex Coins. Price 0 = free.");
                     return;
                 }
                 if (cost == 0) max = 1;   // free giveaway: one entry each
@@ -1481,21 +1486,21 @@ public class CPHInline
                 break;
 
             case "close":
-                if (g == null) return;
+                if (g == null) { Say(c, NoGiveaway()); return; }
                 g.Open = false;
                 Announce($"Giveaway entries closed. {GiveawayCounts(g)}");
                 break;
 
             case "draw":
             case "reroll":
-                if (g == null) return;
+                if (g == null) { Say(c, NoGiveaway()); return; }
                 g.Open = false;
                 g.Drawn = true;
                 DrawWinner(g);
                 break;
 
             case "cancel":
-                if (g == null) return;
+                if (g == null) { Say(c, NoGiveaway()); return; }
                 if (!g.Drawn)
                 {
                     foreach (var kv in g.Tickets)
@@ -1509,10 +1514,83 @@ public class CPHInline
                 break;
 
             case "end":
+                if (g == null) { Say(c, NoGiveaway()); return; }
                 store.Giveaway = null;
                 Say(c, "giveaway cleared.");
                 break;
+
+            default:
+                Say(c, $"didn't recognise \"{sub}\". Use {CmdGiveaway} start, close, draw, reroll, cancel or end.");
+                break;
         }
+    }
+
+    // !giveawayhelp  explains how to enter, tailored to the giveaway running right now.
+    // Mods and owner: posts on every platform. Viewers: their platform only, 30s cooldown.
+    private void GiveawayHelp(Ctx c)
+    {
+        var g = store.Giveaway;
+        string msg;
+        if (g == null || !g.Open)
+            msg = $"How giveaways work: when one is running, type {CmdEnter} to join. Some are free, some cost {CurrencyName} per ticket. More tickets = better odds. Winners are picked at random!";
+        else if (g.TicketCost == 0)
+            msg = $"The giveaway for {g.Prize} is FREE! Just type {CmdEnter} once to join. The winner is picked at random and announced in chat. Good luck!";
+        else
+            msg = $"Giveaway for {g.Prize}: tickets are {Fmt(g.TicketCost)} {CurrencyName} each. {CmdEnter} buys 1, {CmdEnter} 3 buys 3, {CmdEnter} max buys up to {g.MaxTickets}. More tickets = better odds!";
+
+        if (c.Admin) { Announce(msg); return; }
+
+        DateTime now = DateTime.UtcNow;
+        DateTime until;
+        if (giveawayHelpCooldowns.TryGetValue(c.Platform, out until) && until > now) return;
+        giveawayHelpCooldowns[c.Platform] = now.AddSeconds(30);
+        Reply(c.Platform, msg);
+    }
+
+    // !auraexport  saves everyone's balance and stats to data\EpicAura\leaderboard.csv (opens in Excel)
+    private void ExportLeaderboard(Ctx c)
+    {
+        var rows = store.Wallets.Values.OrderByDescending(w => w.Aura).ThenByDescending(w => w.Lifetime).ToList();
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("Rank,Name,Platforms,Epic Aura,Earned from watching,Fight wins,Fight losses,Best streak,Apex Champion wins,Duels won,Heist escapes,Biggest win");
+
+        int rank = 0;
+        foreach (var w in rows)
+        {
+            rank++;
+            string platforms = string.Join(" + ", w.Accounts.Select(a => Cap(PlatformOfKey(a))).Distinct());
+            sb.AppendLine(string.Join(",", new[]
+            {
+                rank.ToString(), Csv(w.Name), Csv(platforms), w.Aura.ToString(), w.Lifetime.ToString(),
+                GetStat(w, "fightWins").ToString(), GetStat(w, "fightLosses").ToString(), GetStat(w, "bestStreak").ToString(),
+                GetStat(w, "ringWins").ToString(), GetStat(w, "duelWins").ToString(), GetStat(w, "heistEscapes").ToString(),
+                GetStat(w, "biggestWin").ToString()
+            }));
+        }
+
+        string file = Path.Combine(DataDir, "leaderboard.csv");
+        try
+        {
+            File.WriteAllText(file, sb.ToString(), new System.Text.UTF8Encoding(true));   // BOM so Excel shows names correctly
+            CPH.LogInfo("[EpicAura] Leaderboard exported to " + file);
+            Say(c, $"leaderboard saved, {rows.Count} people. It's in data\\EpicAura\\leaderboard.csv in the Streamer.bot folder.");
+        }
+        catch (Exception ex)
+        {
+            CPH.LogWarn("[EpicAura] Export failed: " + ex.Message);
+            Say(c, "couldn't save the leaderboard. If leaderboard.csv is open in Excel, close it and try again.");
+        }
+    }
+
+    private static string Csv(string v)
+    {
+        v = v ?? "";
+        return v.IndexOfAny(new[] { ',', '"', '\n' }) >= 0 ? "\"" + v.Replace("\"", "\"\"") + "\"" : v;
+    }
+
+    private string NoGiveaway()
+    {
+        return $"there's no giveaway running. Start one with {CmdGiveaway} start <ticket price> <max tickets each> <prize>, e.g. {CmdGiveaway} start 100 5 Apex Coins.";
     }
 
     private void EnterGiveaway(Ctx c)
@@ -1600,21 +1678,22 @@ public class CPHInline
                 if (p != null) { Say(c, $"a prediction is already running. Use {CmdPredict} result or cancel first."); return; }
 
                 var bits = JoinParts(c.Parts, 1, c.Parts.Length - 1).Split('|').Select(s => s.Trim()).Where(s => s != "").ToList();
-                if (bits.Count < 3) { Say(c, $"usage: {CmdPredict} open <question> | <option 1> | <option 2> ..."); return; }
+                if (bits.Count < 3) { Say(c, $"that's not quite right. Use {CmdPredict} open <question> | <option 1> | <option 2>, e.g. {CmdPredict} open Will we win? | Win | Top 5 | Neither"); return; }
 
                 store.Prediction = new PredictionState { Question = bits[0], Options = bits.Skip(1).ToList() };
                 Announce("Prediction open! " + PredictionStatus(store.Prediction));
                 break;
 
             case "lock":
-                if (p == null) return;
+                if (p == null) { Say(c, $"there's no prediction running. Start one with {CmdPredict} open Will we win? | Win | Top 5 | Neither"); return; }
                 p.Locked = true;
                 Announce($"Prediction locked! Total pool: {Fmt(p.Bets.Values.Sum(b => b.Amount))} {CurrencyName}.");
                 break;
 
             case "result":
                 int option;
-                if (p == null || c.Parts.Length < 2 || !int.TryParse(c.Parts[1], out option) || option < 1 || option > p.Options.Count)
+                if (p == null) { Say(c, $"there's no prediction running. Start one with {CmdPredict} open Will we win? | Win | Top 5 | Neither"); return; }
+                if (c.Parts.Length < 2 || !int.TryParse(c.Parts[1], out option) || option < 1 || option > p.Options.Count)
                 {
                     Say(c, $"usage: {CmdPredict} result <option number>");
                     return;
@@ -1624,7 +1703,7 @@ public class CPHInline
                 break;
 
             case "cancel":
-                if (p == null) return;
+                if (p == null) { Say(c, $"there's no prediction running. Start one with {CmdPredict} open Will we win? | Win | Top 5 | Neither"); return; }
                 foreach (var kv in p.Bets)
                 {
                     Wallet w;
@@ -1632,6 +1711,10 @@ public class CPHInline
                 }
                 store.Prediction = null;
                 Announce("Prediction cancelled, all bets refunded.");
+                break;
+
+            default:
+                Say(c, $"didn't recognise \"{sub}\". Use {CmdPredict} open, lock, result <number> or cancel.");
                 break;
         }
     }
@@ -1735,7 +1818,7 @@ public class CPHInline
                 if (g != null) { Say(c, $"a goal is already running. Use {CmdGoal} end or cancel first."); return; }
                 if (c.Parts.Length < 3 || (target = ParseAmount(c.Parts[1], long.MaxValue)) <= 0)
                 {
-                    Say(c, $"usage: {CmdGoal} start <target> <reward>");
+                    Say(c, $"that's not quite right. Use {CmdGoal} start <target> <reward>, e.g. {CmdGoal} start 100k Cosplay Stream");
                     return;
                 }
                 store.Goal = new GoalState { Target = target, Reward = JoinParts(c.Parts, 2, c.Parts.Length - 2) };
@@ -1743,7 +1826,7 @@ public class CPHInline
                 break;
 
             case "cancel":
-                if (g == null) return;
+                if (g == null) { Say(c, $"there's no community goal running. Start one with {CmdGoal} start <target> <reward>, e.g. {CmdGoal} start 100k Cosplay Stream"); return; }
                 foreach (var kv in g.Contributors)
                 {
                     Wallet w;
@@ -1756,6 +1839,10 @@ public class CPHInline
             case "end":
                 store.Goal = null;
                 Say(c, "goal cleared.");
+                break;
+
+            default:
+                Say(c, $"didn't recognise \"{sub}\". Use {CmdGoal} start, cancel or end.");
                 break;
         }
     }
