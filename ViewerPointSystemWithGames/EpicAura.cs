@@ -1459,6 +1459,9 @@ public class CPHInline
         var g = store.Giveaway;
         bool canRun = c.Owner || (c.Admin && ModsCanRunGiveaways);
 
+        // Owner only: saves the entry list to a file for Terry, nothing is posted in chat
+        if (c.Owner && (sub == "entries" || sub == "list")) { ShowEntries(c, g); return; }
+
         if (c.Admin && !canRun && sub != "") { Say(c, "giveaways are owner only for now."); return; }
 
         if (!canRun || sub == "")
@@ -1497,6 +1500,7 @@ public class CPHInline
                 g.Open = false;
                 g.Drawn = true;
                 DrawWinner(g);
+                SaveEntries(g);   // keeps a record of who entered, with the winner marked
                 break;
 
             case "cancel":
@@ -1520,7 +1524,7 @@ public class CPHInline
                 break;
 
             default:
-                Say(c, $"didn't recognise \"{sub}\". Use {CmdGiveaway} start, close, draw, reroll, cancel or end.");
+                Say(c, $"didn't recognise \"{sub}\". Use {CmdGiveaway} start, close, draw, reroll, cancel, end or entries.");
                 break;
         }
     }
@@ -1586,6 +1590,56 @@ public class CPHInline
     {
         v = v ?? "";
         return v.IndexOfAny(new[] { ',', '"', '\n' }) >= 0 ? "\"" + v.Replace("\"", "\"\"") + "\"" : v;
+    }
+
+    // !giveaway entries  owner only. Saves everyone who has entered to data\EpicAura\giveaway-entries.csv
+    // (opens in Excel). Names are never posted in chat.
+    private void ShowEntries(Ctx c, GiveawayState g)
+    {
+        if (g == null) { Say(c, NoGiveaway()); return; }
+        if (g.Tickets.Count == 0) { Say(c, "nobody has entered yet."); return; }
+
+        string file = SaveEntries(g);
+        if (file == null) { Say(c, "couldn't save the entries. If giveaway-entries.csv is open in Excel, close it and try again."); return; }
+        Say(c, "entries saved to giveaway-entries.csv.");
+    }
+
+    // Writes the entry list, most tickets first. Returns the file path, or null if it couldn't save.
+    private string SaveEntries(GiveawayState g)
+    {
+        var entries = g.Tickets
+            .Where(kv => store.Wallets.ContainsKey(kv.Key))
+            .Select(kv => new { W = store.Wallets[kv.Key], T = kv.Value })
+            .OrderByDescending(x => x.T).ThenBy(x => x.W.Name)
+            .ToList();
+
+        try
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append("Prize,").Append(Csv(g.Prize)).Append("\r\n");
+            sb.Append("Ticket price,").Append(g.TicketCost).Append("\r\n");
+            sb.Append("People,").Append(entries.Count).Append("\r\n");
+            sb.Append("Tickets,").Append(entries.Sum(e => e.T)).Append("\r\n\r\n");
+            sb.Append("Name,Platforms,Tickets,Chance,Won\r\n");
+
+            double total = Math.Max(1, entries.Sum(e => e.T));
+            foreach (var e in entries)
+                sb.Append(Csv(e.W.Name)).Append(',')
+                  .Append(Csv(string.Join(" + ", e.W.Accounts.Select(a => Cap(PlatformOfKey(a))).Distinct()))).Append(',')
+                  .Append(e.T).Append(',')
+                  .Append((e.T / total * 100).ToString("0.0", CultureInfo.InvariantCulture)).Append("%,")
+                  .Append(g.Winners.Contains(e.W.Id) ? "Yes" : "").Append("\r\n");
+
+            string file = Path.Combine(DataDir, "giveaway-entries.csv");
+            File.WriteAllText(file, sb.ToString(), new System.Text.UTF8Encoding(true));
+            CPH.LogInfo("[EpicAura] Giveaway entries saved to " + file);
+            return file;
+        }
+        catch (Exception ex)
+        {
+            CPH.LogWarn("[EpicAura] Couldn't save giveaway entries: " + ex.Message);
+            return null;
+        }
     }
 
     private string NoGiveaway()
